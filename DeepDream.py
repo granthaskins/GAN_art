@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Feb 16 01:28:01 2022
-"""
-
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,12 +23,23 @@ def calc_loss(img, model):
     losses = [tf.math.reduce_mean(act) for act in layer_activations]
     return tf.reduce_sum(losses)
 
+def is_image_file(file_path):
+    valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp']
+    return os.path.splitext(file_path)[1].lower() in valid_extensions
+
 def resize_image(fp, T):
 
-    img = Image.open(fp)
+    if not is_image_file(fp):
+        raise ValueError(f"File '{fp}' is not a valid image file.")
+    
+    try:
+        img = Image.open(fp)
+    except UnidentifiedImageError:
+        raise ValueError(f"Cannot identify image file '{fp}'")
+
     w, h = img.size
     
-    if w> T or h > T:
+    if w > T or h > T:
 
         if w > h:
             new_w = T
@@ -81,6 +87,7 @@ if __name__ == '__main__':
     parser.add_argument('--img_dir', type=str)
     parser.add_argument('--model_architecture', type=str, default='InceptionV3')
     parser.add_argument('--weights', type=str, default='imagenet')
+    parser.add_argument('--layer_names', type=list, default=['mixed3', 'mixed5'])
     parser.add_argument('--max_dim', type=int, default=500, help='Maximum dimension for the downloaded image')
     parser.add_argument('--steps', type=int, default=100, help='Number of steps for DeepDream')
     parser.add_argument('--step_size', type=float, default=0.01, help='Step size for DeepDream')
@@ -89,7 +96,7 @@ if __name__ == '__main__':
     architecture = getattr(tf.keras.applications, args.model_architecture)
 
     base_model = architecture(include_top=False, weights=args.weights)
-    layers = [base_model.get_layer(name).output for name in ['mixed3', 'mixed5']]
+    layers = [base_model.get_layer(name).output for name in args.layer_names]
     dream_model = tf.keras.Model(inputs=base_model.input, outputs=layers)
 
     global deepdream
@@ -100,9 +107,15 @@ if __name__ == '__main__':
 
     for fp in tqdm(fps, desc='Performing Deep Dream on present images'):
 
-      arr = np.asarray(resize_image(fp, args.max_dim))
-      dream_img = run_deep_dream(dream_model, img=arr, steps=args.steps, step_size=args.step_size).numpy()
+      try:
 
-      plt.imshow(dream_img)
-      plt.axis('off')
-      plt.savefig(fp.split('.')[0]+'_DD_hallucination.png')
+        f_ext = os.path.splitext(fp)[1]
+        arr = np.asarray(resize_image(fp, args.max_dim))
+        dream_img = run_deep_dream(dream_model, img=arr, steps=args.steps, step_size=args.step_size).numpy()
+
+        plt.imshow(dream_img)
+        plt.axis('off')
+        plt.savefig(fp.split('.')[0]+'_DD_hallucination'+f_ext)
+
+      except ValueError:
+        pass
