@@ -1,352 +1,200 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Nov  6 02:32:30 2020
-
-@author: Grant
-"""
-
+import os
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-
-from tensorflow.keras import backend as K
-from tensorflow.keras.models import Model, load_model
-from tensorflow.keras.layers import Dense, Flatten, Activation, Dropout, ReLU
-from tensorflow.keras.layers import Add, Multiply, Subtract, Input, Conv1D, Conv2D, Conv2DTranspose, Conv3D, BatchNormalization, concatenate, Reshape, Lambda, UpSampling2D, UpSampling3D
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.layers import LeakyReLU
-
-from tensorflow.keras.activations import relu
-
 from PIL import Image
-
-import os
-
 from tqdm import tqdm
 
-#from tensorflow_addons.layers import InstanceNormalization
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.layers import (Input, Dense, Flatten, Dropout, ReLU,
+                                     Conv2D, Conv2DTranspose, BatchNormalization, 
+                                     LeakyReLU, UpSampling2D, Add, Reshape, Lambda)
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
 
-
-class GAN_art_scratch(object):
+class GANArtScratch(object):
     
-    def __init__(self,painting_dir,dest_dir):
-        
-        
+    def __init__(self, painting_dir, dest_dir, example_dir, gen_model_path=None, disc_model_path=None):
         self.painting_dir = painting_dir
         self.dest_dir = dest_dir
+        self.example_dir = example_dir
 
         self.lr = 1e-4
-        
-        self.img_size = [256,256,3]
-        
-        
+        self.img_size = [256, 256, 3]
+
         self.paintings = self.get_paintings()
         self.partitioned_data_dict = self.partition_data()
-        
-        
+
         self.optimizer = Adam(self.lr)
         
-        self.generator = self.build_generator()
-        self.discriminator = self.build_discriminator()
+        if gen_model_path:
+            self.generator = load_model(gen_model_path)
+        else:
+            self.generator = self.build_generator()
         
-        self.discriminator.compile(loss='mean_squared_error',
-                           optimizer=self.optimizer,
-                           metrics=['acc'])
+        if disc_model_path:
+            self.discriminator = load_model(disc_model_path)
+        else:
+            self.discriminator = self.build_discriminator()
+
+        self.discriminator.compile(
+            loss='mean_squared_error',
+            optimizer=self.optimizer,
+            metrics=['accuracy']
+        )
         
         self.discriminator.trainable = False
 
-        
-        GAN_inputs = Input(shape=(int(self.img_size[0]/4),int(self.img_size[1]/4),self.img_size[2]))
-        generator_output = self.generator(GAN_inputs)
-        
+        gan_inputs = Input(shape=self.img_size)
+        generator_output = self.generator(gan_inputs)
         pred = self.discriminator(generator_output)
         
-        self.GAN = Model(inputs=GAN_inputs,outputs=pred)
-        
-        self.GAN.compile(loss=['mean_squared_error'],
-                           optimizer=self.optimizer,
-                           metrics=['acc'])
+        self.gan = Model(inputs=gan_inputs, outputs=pred)
+        self.gan.compile(
+            loss='mean_squared_error',
+            optimizer=self.optimizer,
+            metrics=['accuracy']
+        )
 
     def get_paintings(self):
-        
-        img_paths = []
-        
-        for dirName, subdirList, fileList in os.walk(self.painting_dir, topdown=True):
-        
-            for fname in fileList:
-                
-                img_paths.append(os.path.join(dirName,fname))
-                
-        arr_list = []
-        
-        for img_path in tqdm(img_paths,desc="Loading paintings"):
-            
-            image = Image.open(img_path)            
-            img_arr = np.array(image)
-            
-            img_arr = img_arr / 255.
-            
-            # img_arr = img_arr - 127.5 
-            # img_arr = img_arr / 127.5 
-            
-            arr_list.append(img_arr)
-            
-        return arr_list
-    
+        paintings = []
+        for file in os.listdir(self.painting_dir):
+            if file.endswith('.jpg'):
+                image = Image.open(os.path.join(self.painting_dir, file))
+                image = image.resize((self.img_size[0], self.img_size[1]))
+                paintings.append(np.array(image))
+        return np.array(paintings)
+
     def partition_data(self):
-    
-        train_paintings = np.zeros(shape=(int(0.8*len(self.paintings)),self.img_size[0],self.img_size[1],self.img_size[2]))
-        val_paintings = np.zeros(shape=(int(0.1*len(self.paintings)),self.img_size[0],self.img_size[1],self.img_size[2]))
-        test_paintings = np.zeros(shape=(int(0.1*len(self.paintings)),self.img_size[0],self.img_size[1],self.img_size[2]))               
-        
-        train_painting_count = 0
-        val_painting_count = 0
-        test_painting_count = 0                
-                
-        for i in range(len(self.paintings)):
-            
-            if i < int(0.8*len(self.paintings)):
-                
-                train_paintings[train_painting_count,:,:,:] = self.paintings[i]                
-                train_painting_count += 1
-                
-            if i > int(0.8*len(self.paintings)) and i < int(0.9*len(self.paintings)):
-                
-                val_paintings[val_painting_count,:,:,:] = self.paintings[i]                
-                val_painting_count += 1
-                
-            if i > int(0.9*len(self.paintings)):
-                
-                test_paintings[test_painting_count,:,:,:] = self.paintings[i]                
-                test_painting_count += 1
-                
-        return {"train_paintings":train_paintings,"val_paintings":val_paintings,"test_paintings":test_paintings}
-
-       
-    def data_generator(self,batch_size,partition_type):
-        
-        latents = np.zeros(shape=(batch_size,int(self.img_size[0]/4),int(self.img_size[1]/4),self.img_size[2]))
-        paintings = np.zeros(shape=(batch_size,self.img_size[0],self.img_size[1],self.img_size[2]))
-
-        for i in range(batch_size):   
-            
-            latents[i,:,:,:] = np.random.normal(loc=0.0, scale=1.0, size=(int(self.img_size[0]/4),int(self.img_size[1]/4),self.img_size[2]))
-        
-            if partition_type == "Training":
-                
-                painting_idx = np.random.randint(0,self.partitioned_data_dict["train_paintings"].shape[0])
-                
-                paintings[i,:,:,:] = self.partitioned_data_dict["train_paintings"][painting_idx]
-            
-            if partition_type == "Validation":
-                
-                painting_idx = np.random.randint(0,self.partitioned_data_dict["val_paintings"].shape[0])
-                
-                paintings[i,:,:,:] = self.partitioned_data_dict["val_paintings"][painting_idx]
-                
-            if partition_type == "Testing":
-                
-                painting_idx = np.random.randint(0,self.partitioned_data_dict["test_paintings"].shape[0])
-                
-                paintings[i,:,:,:] = self.partitioned_data_dict["test_paintings"][painting_idx]
-                
-
-        return latents,paintings
-
-    def res_block(self,input_FMs):
-        
-        conva = Conv2D(256,3,padding='same')(input_FMs)
-        BNa = BatchNormalization()(conva)
-        #INa = InstanceNormalization()(conva)
-        acta = ReLU()(BNa)  
-        
-        convb = Conv2D(256,3,padding='same')(acta)
-        #INb = InstanceNormalization()(convb)
-        BNb = BatchNormalization()(convb)
-        FM_sum = Add()([BNa,BNb])
-        
-        return FM_sum
+        # Partition the data into training and validation sets
+        idx = np.random.permutation(len(self.paintings))
+        split_idx = int(0.8 * len(self.paintings))
+        train_idx, val_idx = idx[:split_idx], idx[split_idx:]
+        return {
+            'train': self.paintings[train_idx],
+            'val': self.paintings[val_idx]
+        }
 
     def build_generator(self):
-        
-        latent = Input(shape=(int(self.img_size[0]/4),int(self.img_size[1]/4),self.img_size[2]))
+        inputs = Input(shape=self.img_size)
 
-        RM1 = self.res_block(latent)
-        RM2 = self.res_block(RM1)
-        RM3 = self.res_block(RM2)
-        RM4 = self.res_block(RM3)
-        RM5 = self.res_block(RM4)
-        RM6 = self.res_block(RM5)
-        RM7 = self.res_block(RM6)
-        RM8 = self.res_block(RM7)
-        RM9 = self.res_block(RM8)
+        x = Conv2D(64, kernel_size=3, strides=1, padding='same')(inputs)
+        x = BatchNormalization()(x)
+        x = LeakyReLU(alpha=0.2)(x)
+
+        for _ in range(2):
+            x = Conv2D(128, kernel_size=3, strides=1, padding='same')(x)
+            x = BatchNormalization()(x)
+            x = LeakyReLU(alpha=0.2)(x)
+
+        x = UpSampling2D(size=2)(x)
+        x = Conv2D(64, kernel_size=3, strides=1, padding='same')(x)
+        x = BatchNormalization()(x)
+        x = LeakyReLU(alpha=0.2)(x)
+
+        outputs = Conv2D(self.img_size[2], kernel_size=3, strides=1, padding='same', activation='tanh')(x)
         
-        conv1T = Conv2DTranspose(128,3,strides=(2,2),padding='same')(RM9)
-        conv2T = Conv2DTranspose(64,3,strides=(2,2),padding='same')(conv1T)
-        
-        painting = Conv2D(3,7,padding='same')(conv2T)
-        painting = relu(painting,max_value=1.)
-        
-        model = Model(inputs=latent,outputs=painting)
-    
-        return model
-    
+        return Model(inputs, outputs)
+
     def build_discriminator(self):
-        
-        input_layer = Input(shape=(self.img_size[0],self.img_size[1],self.img_size[2]))
-        
-        conv1 = Conv2D(64,4,strides=(2,2),padding='same')(input_layer)
-        BN1 = BatchNormalization()(conv1)
-        #IN1 = InstanceNormalization()(conv1)
-        act1 = LeakyReLU()(BN1)
-        
-        conv2 = Conv2D(128,4,strides=(2,2),padding='same')(act1)
-        BN2 = BatchNormalization()(conv2)
-        #IN2 = InstanceNormalization()(conv2)
-        act2 = LeakyReLU()(BN2)
-        
-        conv3 = Conv2D(256,4,strides=(2,2),padding='same')(act2)
-        BN3 = BatchNormalization()(conv3)
-        #IN3 = InstanceNormalization()(conv3)
-        act3 = LeakyReLU()(BN3)
-        
-        conv4 = Conv2D(512,3,strides=(1,1),padding='valid')(act3)
-        BN4 = BatchNormalization()(conv4)
-        #IN4 = InstanceNormalization()(conv4)
-        act4 = LeakyReLU()(BN4)
-        
-        pred = Conv2D(1,3,activation='sigmoid',padding='same')(act4)
-        
-        model = Model(inputs=input_layer,outputs=pred)
-        
-        return model
+        inputs = Input(shape=self.img_size)
 
+        x = Conv2D(64, kernel_size=3, strides=2, padding='same')(inputs)
+        x = LeakyReLU(alpha=0.2)(x)
+        x = Dropout(0.25)(x)
 
-    def train_GAN(self,epochs,batch_size):
-    
-        train_gen_losses = []
-        val_gen_losses = []
+        for _ in range(2):
+            x = Conv2D(128, kernel_size=3, strides=2, padding='same')(x)
+            x = BatchNormalization()(x)
+            x = LeakyReLU(alpha=0.2)(x)
+            x = Dropout(0.25)(x)
+
+        x = Flatten()(x)
+        outputs = Dense(1, activation='sigmoid')(x)
         
-        train_dis_losses = []
-        val_dis_losses = []
-        
-        train_gen_losses_per_epoch = []
-        val_gen_losses_per_epoch = []
-        
-        train_dis_losses_per_epoch = []
-        val_dis_losses_per_epoch = []
-        
-        steps_per_epoch = int(len(self.paintings)/batch_size)
-        
-        real_labels = np.ones(shape=(batch_size,30,30))
-        
-        dis_labels = np.zeros(shape=(2*batch_size,30,30))
-        dis_labels[batch_size:,:,:] = np.ones(shape=(batch_size,30,30))
-        
+        return Model(inputs, outputs)
+
+    def train_gan(self, epochs, batch_size):
+        train_gen_losses, val_gen_losses = [], []
+        train_dis_losses, val_dis_losses = [], []
+
         for epoch in range(epochs):
-            for step in tqdm(range(steps_per_epoch),desc="Training GAN; epoch {}".format(epoch+1)):
-                
-                train_input,train_output = self.data_generator(batch_size,"Training")
-                val_input,val_output = self.data_generator(batch_size,"Validation")
-        
-                train_pred = self.generator.predict(train_input)
-                val_pred = self.generator.predict(val_input)
-                
-                train_dis_in = np.zeros(shape=(2*batch_size,train_output.shape[1],train_output.shape[2],train_output.shape[3]))
-                val_dis_in = np.zeros(shape=(2*batch_size,val_output.shape[1],val_output.shape[2],val_output.shape[3]))
-                
-                train_dis_in[:batch_size,:,:,:] = train_pred
-                val_dis_in[:batch_size,:,:,:] = val_pred
-                
-                train_dis_in[batch_size:,:,:,:] = train_output
-                val_dis_in[batch_size:,:,:,:] = val_output
-                
-                dis_train_loss_list = self.discriminator.train_on_batch(train_dis_in,dis_labels)
-                dis_val_loss_list = self.discriminator.test_on_batch(val_dis_in,dis_labels)
-         
-                train_dis_loss = dis_train_loss_list[0]
-                val_dis_loss = dis_val_loss_list[0]
-                
-                
-                train_dis_losses.append(train_dis_loss)
-                val_dis_losses.append(val_dis_loss)
-                
-                
-                gen_train_loss_list = self.GAN.train_on_batch(train_input,real_labels)
-                gen_val_loss_list = self.GAN.test_on_batch(val_input,real_labels)
-                
-                train_gen_loss = gen_train_loss_list[0]
-                val_gen_loss = gen_val_loss_list[0]
-                
-                train_gen_losses.append(train_gen_loss)
-                val_gen_losses.append(val_gen_loss)
-        
-                if step == 0:
-                
-                    train_gen_losses_per_epoch.append(train_gen_loss)
-                    val_gen_losses_per_epoch.append(val_gen_loss) 
-                    
-                    train_dis_losses_per_epoch.append(train_dis_losses[-1])
-                    val_dis_losses_per_epoch.append(val_dis_losses[-1])
+            for step in tqdm(range(len(self.partitioned_data_dict['train']) // batch_size)):
+                real_imgs = self.partitioned_data_dict['train'][step*batch_size : (step+1)*batch_size]
+                noise = np.random.normal(0, 1, (batch_size, self.img_size[0], self.img_size[1], self.img_size[2]))
+                generated_imgs = self.generator.predict(noise)
 
-                    
-                
-                if step > 0:
-                    
-                    if val_gen_losses[-1] == np.min(val_gen_losses):
-                        self.generator.save(os.path.join(self.dest_dir,'Monet_GAN_scratch_val_loss.h5'))
+                dis_loss_real = self.discriminator.train_on_batch(real_imgs, np.ones((batch_size, 1)))
+                dis_loss_fake = self.discriminator.train_on_batch(generated_imgs, np.zeros((batch_size, 1)))
+                dis_loss = 0.5 * np.add(dis_loss_real, dis_loss_fake)
 
-                self.generator.save(os.path.join(self.dest_dir,'Monet_GAN_scratch_current.h5'))
-                    
-   
-            
-            plt.imshow(val_output[0,:,:,:])
-            plt.title('Real Painting')
-            plt.axis('off')
-            plt.show()
-            
-            plt.imshow(val_pred[0,:,:,:])
-            plt.title('Painting by GAN')
-            plt.axis('off')
-            plt.show()
-            
-                
-        plt.figure(figsize = (8,6))
+                noise = np.random.normal(0, 1, (batch_size, self.img_size[0], self.img_size[1], self.img_size[2]))
+                gen_loss = self.gan.train_on_batch(noise, np.ones((batch_size, 1)))
+
+                train_gen_losses.append(gen_loss[0])
+                train_dis_losses.append(dis_loss[0])
+
+            val_noise = np.random.normal(0, 1, (batch_size, self.img_size[0], self.img_size[1], self.img_size[2]))
+            val_generated_imgs = self.generator.predict(val_noise)
+            val_gen_loss = self.gan.evaluate(val_generated_imgs, np.ones((batch_size, 1)), verbose=0)
+            val_dis_loss = self.discriminator.evaluate(self.partitioned_data_dict['val'], np.ones((batch_size, 1)), verbose=0)
+
+            val_gen_losses.append(val_gen_loss[0])
+            val_dis_losses.append(val_dis_loss[0])
+
+            print(f"Epoch {epoch+1}/{epochs}")
+            print(f"Generator loss: {gen_loss[0]}, Discriminator loss: {dis_loss[0]}")
+            print(f"Validation Generator loss: {val_gen_loss[0]}, Validation Discriminator loss: {val_dis_loss[0]}")
+
+            if epoch % 5 == 0:
+                self.generator.save(os.path.join(self.dest_dir, f'generator_epoch_{epoch}.h5'))
+                self.discriminator.save(os.path.join(self.dest_dir, f'discriminator_epoch_{epoch}.h5'))
+                self.save_example_images(epoch)
+
+        self.plot_losses(train_gen_losses, val_gen_losses, train_dis_losses, val_dis_losses)
+
+    def save_example_images(self, epoch):
+        noise = np.random.normal(0, 1, (1, self.img_size[0], self.img_size[1], self.img_size[2]))
+        generated_img = self.generator.predict(noise)[0]
+        generated_img = (generated_img * 127.5 + 127.5).astype(np.uint8)
+
+        img = Image.fromarray(generated_img)
+        img.save(os.path.join(self.example_dir, f'example_image_epoch_{epoch}.png'))
+
+    def plot_losses(self, train_gen_losses, val_gen_losses, train_dis_losses, val_dis_losses):
+        plt.figure(figsize=(8, 6))
         plt.title('Training and validation generator loss')
+        plt.plot(train_gen_losses, label='Training')
+        plt.plot(val_gen_losses, label='Validation')
         plt.xlabel('Steps')
         plt.ylabel('Loss')
-        ta, = plt.plot(range(len(train_gen_losses_per_epoch)), train_gen_losses_per_epoch)
-        va, = plt.plot(range(len(val_gen_losses_per_epoch)), val_gen_losses_per_epoch)
-        plt.legend([ta, va], ['Training', 'Validation'])
-        plt.savefig(os.path.join(self.dest_dir,'total loss cuves'))
+        plt.legend()
+        plt.savefig(os.path.join(self.dest_dir, 'generator_loss.png'))
         plt.show()
-        
-        plt.figure(figsize = (8,6))
+
+        plt.figure(figsize=(8, 6))
         plt.title('Training and validation discriminator loss')
+        plt.plot(train_dis_losses, label='Training')
+        plt.plot(val_dis_losses, label='Validation')
         plt.xlabel('Steps')
-        plt.ylabel('Accuracy')
-        ta, = plt.plot(range(len(train_dis_losses_per_epoch)), train_dis_losses_per_epoch)
-        va, = plt.plot(range(len(val_dis_losses_per_epoch)), val_dis_losses_per_epoch)
-        plt.legend([ta, va], ['Training', 'Validation'])
-        plt.savefig(os.path.join(self.dest_dir,'discriminator loss cuves'))
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.savefig(os.path.join(self.dest_dir, 'discriminator_loss.png'))
         plt.show()
-        
-        
 
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Train a GAN to generate art from scratch.')
+    parser.add_argument('painting_dir', type=str, help='Directory containing paintings')
+    parser.add_argument('dest_dir', type=str, help='Directory to save models and loss plots')
+    parser.add_argument('example_dir', type=str, help='Directory to save example images')
+    parser.add_argument('--gen_model_path', type=str, default=None, help='Path to pre-trained generator model')
+    parser.add_argument('--disc_model_path', type=str, default=None, help='Path to pre-trained discriminator model')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs for training')
 
-painting_dir ='/home/grant/Dropbox/PC/Downloads/gan-getting-started/monet_jpg'
-dest_dir = '/Users/grant/Desktop/GAN_art_files'
+    args = parser.parse_args()
 
-        
-        
-GAN_Art = GAN_art_scratch(painting_dir,dest_dir)
+    gan_art = GANArtScratch(args.painting_dir, args.dest_dir, args.example_dir, args.gen_model_path, args.disc_model_path)
 
-batch_size = 16
-
-epochs = 10
-
-GAN_Art.train_GAN(epochs,batch_size)
-        
-        
-
-
+    gan_art.train_gan(args.epochs, args.batch_size)
