@@ -4,6 +4,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
+import tensorflow as tf
+
+# Suppress TensorFlow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.get_logger().setLevel('ERROR')
 
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import (Input, Dense, Flatten, Dropout, ReLU,
@@ -12,7 +17,7 @@ from tensorflow.keras.layers import (Input, Dense, Flatten, Dropout, ReLU,
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 
-class GANArtScratch(object):
+class GANArtScratch:
     
     def __init__(self, painting_dir, dest_dir, example_dir, gen_model_path=None, disc_model_path=None):
         self.painting_dir = painting_dir
@@ -78,11 +83,11 @@ class GANArtScratch(object):
     def build_generator(self):
         inputs = Input(shape=self.img_size)
 
-        x = Conv2D(64, kernel_size=3, strides=1, padding='same')(inputs)
+        x = Conv2D(64, kernel_size=3, strides=2, padding='same')(inputs)
         x = BatchNormalization()(x)
         x = LeakyReLU(alpha=0.2)(x)
 
-        for _ in range(2):
+        for _ in range(4):
             x = Conv2D(128, kernel_size=3, strides=1, padding='same')(x)
             x = BatchNormalization()(x)
             x = LeakyReLU(alpha=0.2)(x)
@@ -103,7 +108,7 @@ class GANArtScratch(object):
         x = LeakyReLU(alpha=0.2)(x)
         x = Dropout(0.25)(x)
 
-        for _ in range(2):
+        for _ in range(4):
             x = Conv2D(128, kernel_size=3, strides=2, padding='same')(x)
             x = BatchNormalization()(x)
             x = LeakyReLU(alpha=0.2)(x)
@@ -120,7 +125,8 @@ class GANArtScratch(object):
 
         for epoch in range(epochs):
             for step in tqdm(range(len(self.partitioned_data_dict['train']) // batch_size)):
-                real_imgs = self.partitioned_data_dict['train'][step*batch_size : (step+1)*batch_size]
+                real_idxs = np.random.choice(self.partitioned_data_dict['train'].shape[0], batch_size, replace=True)
+                real_imgs = self.partitioned_data_dict['train'][real_idxs]
                 noise = np.random.normal(0, 1, (batch_size, self.img_size[0], self.img_size[1], self.img_size[2]))
                 generated_imgs = self.generator.predict(noise)
 
@@ -131,13 +137,15 @@ class GANArtScratch(object):
                 noise = np.random.normal(0, 1, (batch_size, self.img_size[0], self.img_size[1], self.img_size[2]))
                 gen_loss = self.gan.train_on_batch(noise, np.ones((batch_size, 1)))
 
-                train_gen_losses.append(gen_loss[0])
-                train_dis_losses.append(dis_loss[0])
-
             val_noise = np.random.normal(0, 1, (batch_size, self.img_size[0], self.img_size[1], self.img_size[2]))
             val_generated_imgs = self.generator.predict(val_noise)
             val_gen_loss = self.gan.evaluate(val_generated_imgs, np.ones((batch_size, 1)), verbose=0)
-            val_dis_loss = self.discriminator.evaluate(self.partitioned_data_dict['val'], np.ones((batch_size, 1)), verbose=0)
+            val_real_idxs = np.random.choice(self.partitioned_data_dict['val'].shape[0], batch_size, replace=True)
+            val_real_imgs = self.partitioned_data_dict['val'][val_real_idxs]
+            val_dis_loss = self.discriminator.evaluate(val_real_imgs, np.ones((batch_size, 1)), verbose=0)
+
+            train_gen_losses.append(gen_loss[0])
+            train_dis_losses.append(dis_loss[0])
 
             val_gen_losses.append(val_gen_loss[0])
             val_dis_losses.append(val_dis_loss[0])
@@ -185,16 +193,22 @@ class GANArtScratch(object):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train a GAN to generate art from scratch.')
-    parser.add_argument('painting_dir', type=str, help='Directory containing paintings')
-    parser.add_argument('dest_dir', type=str, help='Directory to save models and loss plots')
-    parser.add_argument('example_dir', type=str, help='Directory to save example images')
-    parser.add_argument('--gen_model_path', type=str, default=None, help='Path to pre-trained generator model')
-    parser.add_argument('--disc_model_path', type=str, default=None, help='Path to pre-trained discriminator model')
+    parser.add_argument('--painting_dir', type=str, help='Directory containing paintings')
+    parser.add_argument('--dest_dir', type=str, help='Directory to save models and loss plots')
+    parser.add_argument('--example_dir', type=str, help='Directory to save example images')
+    parser.add_argument('--gen_model_path', type=str, default='', help='Path to pre-trained generator model')
+    parser.add_argument('--disc_model_path', type=str, default='', help='Path to pre-trained discriminator model')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to train')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs for training')
-
+    
     args = parser.parse_args()
 
-    gan_art = GANArtScratch(args.painting_dir, args.dest_dir, args.example_dir, args.gen_model_path, args.disc_model_path)
+    gan_art = GANArtScratch(
+        painting_dir=args.painting_dir,
+        dest_dir=args.dest_dir,
+        example_dir=args.example_dir,
+        gen_model_path=args.gen_model_path,
+        disc_model_path=args.disc_model_path
+    )
 
     gan_art.train_gan(args.epochs, args.batch_size)
